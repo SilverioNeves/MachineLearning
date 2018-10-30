@@ -1,0 +1,140 @@
+---
+title: "Machine_Learning_Project"
+author: "Silverio Neves"
+date: "29 de Outubro de 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if(!require(caret)) install.packages("caret")
+library(caret)
+if(!require(ggplot2)) install.packages("ggplot2")
+library(ggplot2)
+if(!require(spam)) install.packages("spam")
+library(spam)
+if(!require(randomForest)) install.packages("randomForest")
+library(randomForest)
+if(!require(rfUtilities)) install.packages("rfUtilities")
+library(rfUtilities)
+```
+
+# Executive Summary
+In this project, we use data (a) from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. **The goal** of the project is to predict the manner in which they did the exercise. This is the "classe" variable. We do a prediction using 20 different test cases in the model.
+For the prediction model we it was the FCA and Random Forest with great sucess.
+
+*(a)Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. (http://groupware.les.inf.puc-rio.br/har)*
+
+# Load and cleaning data
+We will download and load file for training and test.
+```{r download}
+## download files
+if(!file.exists("pml-training.csv")) download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv" )
+if(!file.exists("pml-testing.csv"))
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv" )
+## load dataset
+tr <- read.csv("pml-training.csv", na.strings = c("#DIV/0!","NA"))
+ts <- read.csv("pml-testing.csv", na.strings = c("#DIV/0!","NA"))
+## dataset properties
+trHeads <- names(tr)
+tsHeads <- names(ts)
+```
+The **training dataset** has `r dim(tr)[1]`observations and `r dim(tr)[2]` variables. The testing dataset has `r dim(ts)[1]`observations and `r dim(ts)[2]` variables. The two datasets have the same number of variables but one is different. In training dataset there is a variable `r trHeads[!trHeads==tsHeads][1]` and in testing dataset the substitute variable is `r trHeads[!trHeads==tsHeads][1]`.
+
+The **outcome variable CLASS** has a class of `r class(tr$classe)[1]` with the following factors and their number of occurences in the dataset
+```{r outcome variable}
+summary(tr$classe)
+```
+
+
+```{r cleanNA, fig.height = 2, fig.width = 3, fig.align = "center", echo = TRUE}
+rowswithoutNA <- rowSums(is.na(tr))
+rowswithoutNA <- sum(rowswithoutNA==0)
+
+NA_Col <- data.frame(Colnumber = 1:dim(tr)[2], ColNANumber = colSums(is.na(tr)))
+
+ncol95NA <- sum(colSums(is.na(tr))>=dim(tr)[1]*0.95)
+                     
+g1 = ggplot(data = NA_Col, aes(x = Colnumber, y = ColNANumber))
+g1 = g1 + geom_point(show.legend = FALSE)
+g1 = g1 + geom_hline(yintercept = dim(tr)[1]*.95, color = "red")
+g1 = g1 + labs(title = "Number of NAs per column in training data set", y = "Numer of NAs",x = "Column Number")
+g1
+
+predictorstoremove <- as.vector(names(tr)[colSums(is.na(tr))>=dim(tr)[1]*0.95])
+trclean <- tr[,-which(names(tr) %in% predictorstoremove)]
+tsclean <- ts[,-which(names(ts) %in% predictorstoremove)]
+
+```
+
+Exploring the training dataset it shoes us that there are **`r rowswithoutNA` rows** without NA presence and there a **`r ncol95NA` predictors** with more than 95% of their observations values with NAs. So these predictors should be ignored in the training and testing datasets.
+
+The first 6 variables seems to be related with row identifcation **`r names(trclean)[1]`**, user identification **`r names(trclean)[2]`** and time register **`r names(trclean)[3:6]`**. So they are not important for the outcome **`r names(trclean)[60]`**. So we will remove it from the two datasets.
+
+```{r removevariables}
+str(trclean[,1:6])
+trclean <- trclean[,-c(1:6)]
+tsclean <- tsclean[,-c(1:6)]
+```
+
+
+# Reducing dimension (Pre Processing)
+
+The clean dataset has `r dim(trclean)[2]` variables that we will explore to reduce the dimension using the PCA (Principal Components Analysis).
+
+```{r pca, fig.height = 2, fig.width = 3, fig.align = "center", echo = TRUE}
+preProcess <- prcomp(trclean[,-54], scale = TRUE)
+VarianceExplained_prop <- data.frame(varexpl = preProcess$sdev^2/sum(preProcess$sdev^2), x = c(1:(dim(trclean)[2]-1)))
+
+g2 = ggplot(data = VarianceExplained_prop, aes(x = x, y = cumsum(varexpl)))
+g2 = g2 + geom_col(show.legend = FALSE, fill="grey", colour="black")
+g2 = g2 + geom_hline(yintercept = 0.99, color = "#FF9999", size = 1.5)
+g2 = g2 + geom_vline(xintercept = 37, color = "#FF9999", size = 1.5)
+g2 = g2 + labs(title = "PCA - Cumulative Proportion Explained", y = "Cumulative Proportion",x = "Principal Component", subtitle = "37 PCs explained 99%")
+g2
+
+```
+
+In the graph above we can see that 37 Principal components explain 99% of total variance. So it is clear that we will use PCA.
+
+# Model selection and implementation
+As the outcome **classe** implies predicting a category, the **Random Forest** could be a good option.
+
+```{r modeltrainingdata}
+## new train data
+trdata <- data.frame(class = trclean$classe, preProcess$x)
+## select outcome and the 37 PCs
+trdata <- trdata[,1:38]
+## Random Forest Model
+rfmodel <- randomForest(class~., data = trdata)
+## Doing Cross Validation
+rf.cv <- rf.crossValidation(rfmodel, trdata, p=0.10, n=3) 
+print(rfmodel)
+print(rf.cv)
+## Predict the training data and see the Confusion Matrix
+rfpredictor <- predict(rfmodel, newdata = trdata)
+confusionMatrix(rfpredictor, trdata$class)
+```
+
+We can see the model has great accuracy of near 1, so the model was a good selection and the expected out of sample error is near 0 (1- the model accuracy). 
+
+# Applying RF model in Test Data
+We will use the same techinque applied to the training data.
+```{r modeltestdata}
+## Using PCA from training dataset in the test data
+tsdata <- as.data.frame(predict(preProcess, newdata = tsclean))
+rfresultstest <- predict(rfmodel, tsdata)
+```
+The results are `r rfresultstest`
+
+# Conclusions
+The use of PCA (Principal Components Analysis) and Random Forest has good results.
+
+
+
+
+
+
+
+
